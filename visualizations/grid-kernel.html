@@ -1,0 +1,256 @@
+<div id="grid-kernel-viz">
+  <style>
+    #grid-kernel-viz {
+      display: grid;
+      gap: calc(var(--font-size-base) * 1);
+      color: var(--foreground);
+    }
+    #grid-kernel-viz .gk-head {
+      display: grid;
+      gap: calc(var(--font-size-base) * 0.5);
+      padding-inline-end: 96px;
+    }
+    #grid-kernel-viz .gk-meta {
+      display: flex;
+      align-items: stretch;
+      gap: calc(var(--font-size-base) * 0.75);
+      flex-wrap: wrap;
+    }
+    #grid-kernel-viz .gk-stat {
+      min-width: 130px;
+    }
+    #grid-kernel-viz .gk-stage {
+      display: grid;
+      place-items: center;
+      min-height: 260px;
+      padding-block: calc(var(--font-size-base) * 0.5);
+    }
+    #grid-kernel-viz .gk-board {
+      --gk-cols: 4;
+      display: grid;
+      grid-template-columns: repeat(var(--gk-cols), minmax(0, 1fr));
+      gap: 3px;
+      width: min(100%, 430px);
+      aspect-ratio: var(--gk-cols) / var(--gk-rows);
+    }
+    #grid-kernel-viz .gk-cell {
+      display: grid;
+      place-items: center;
+      min-width: 0;
+      min-height: 0;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--muted);
+      color: var(--muted-foreground);
+      font-variant-numeric: tabular-nums;
+    }
+    #grid-kernel-viz .gk-cell.is-one {
+      background: color-mix(in srgb, var(--viz-series-1) 24%, var(--card));
+      color: var(--foreground);
+      border-color: color-mix(in srgb, var(--viz-series-1) 58%, var(--border));
+      font-weight: 500;
+    }
+    #grid-kernel-viz .gk-legend {
+      display: flex;
+      justify-content: center;
+      gap: calc(var(--font-size-base) * 1);
+      color: var(--muted-foreground);
+    }
+    #grid-kernel-viz .gk-key {
+      display: inline-flex;
+      align-items: center;
+      gap: calc(var(--font-size-base) * 0.35);
+    }
+    #grid-kernel-viz .gk-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 3px;
+      border: 1px solid var(--border);
+      background: var(--muted);
+    }
+    #grid-kernel-viz .gk-swatch.is-one {
+      background: color-mix(in srgb, var(--viz-series-1) 24%, var(--card));
+      border-color: color-mix(in srgb, var(--viz-series-1) 58%, var(--border));
+    }
+    @media (max-width: 480px) {
+      #grid-kernel-viz .gk-head { padding-inline-end: 0; }
+      #grid-kernel-viz .gk-stage { min-height: 220px; }
+    }
+  </style>
+
+  <div class="gk-head">
+    <h1>格子圖的 kernel</h1>
+    <div class="viz-controls">
+      <label class="form-label" for="gk-size">棋盤
+        <select class="form-select" id="gk-size">
+          <option value="2x3">2 × 3</option>
+          <option value="3x3">3 × 3</option>
+          <option value="4x4" selected>4 × 4</option>
+          <option value="5x5">5 × 5</option>
+          <option value="9x9">9 × 9</option>
+        </select>
+      </label>
+      <label class="form-label" for="gk-basis">Basis vector
+        <select class="form-select" id="gk-basis"></select>
+      </label>
+    </div>
+  </div>
+
+  <div class="gk-meta">
+    <div class="card viz-stat gk-stat">
+      <span class="text-muted">Kernel 維度</span>
+      <span class="viz-stat-value tabular-nums" id="gk-dim">0</span>
+    </div>
+    <div class="card viz-stat gk-stat">
+      <span class="text-muted">Kernel vectors</span>
+      <span class="viz-stat-value tabular-nums" id="gk-count">1</span>
+    </div>
+  </div>
+
+  <div class="gk-stage">
+    <div class="gk-board" id="gk-board" role="img" aria-label="所選 kernel basis vector 的格子圖樣"></div>
+  </div>
+
+  <div class="gk-legend text-small" aria-hidden="true">
+    <span class="gk-key"><span class="gk-swatch is-one"></span>1（選中）</span>
+    <span class="gk-key"><span class="gk-swatch"></span>0</span>
+  </div>
+  <div class="sr-only" id="gk-live" aria-live="polite"></div>
+
+  <script>
+    (() => {
+      const root = document.getElementById('grid-kernel-viz');
+      const sizeSelect = root.querySelector('#gk-size');
+      const basisSelect = root.querySelector('#gk-basis');
+      const board = root.querySelector('#gk-board');
+      const dimOut = root.querySelector('#gk-dim');
+      const countOut = root.querySelector('#gk-count');
+      const live = root.querySelector('#gk-live');
+
+      function matrixFor(rows, cols) {
+        const n = rows * cols;
+        const a = Array.from({ length: n }, () => Array(n).fill(0));
+        const dirs = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (let r = 0; r < rows; r += 1) {
+          for (let c = 0; c < cols; c += 1) {
+            const i = r * cols + c;
+            for (const [dr, dc] of dirs) {
+              const rr = r + dr;
+              const cc = c + dc;
+              if (rr >= 0 && rr < rows && cc >= 0 && cc < cols) {
+                a[i][rr * cols + cc] = 1;
+              }
+            }
+          }
+        }
+        return a;
+      }
+
+      function nullspaceGF2(input) {
+        const a = input.map(row => row.slice());
+        const rowCount = a.length;
+        const colCount = a[0].length;
+        const pivots = [];
+        let pivotRow = 0;
+        for (let col = 0; col < colCount && pivotRow < rowCount; col += 1) {
+          let found = -1;
+          for (let r = pivotRow; r < rowCount; r += 1) {
+            if (a[r][col]) { found = r; break; }
+          }
+          if (found < 0) continue;
+          [a[pivotRow], a[found]] = [a[found], a[pivotRow]];
+          for (let r = 0; r < rowCount; r += 1) {
+            if (r !== pivotRow && a[r][col]) {
+              for (let j = col; j < colCount; j += 1) a[r][j] ^= a[pivotRow][j];
+            }
+          }
+          pivots.push(col);
+          pivotRow += 1;
+        }
+        const pivotSet = new Set(pivots);
+        const free = Array.from({ length: colCount }, (_, i) => i).filter(i => !pivotSet.has(i));
+        return free.map(freeCol => {
+          const v = Array(colCount).fill(0);
+          v[freeCol] = 1;
+          for (let r = pivots.length - 1; r >= 0; r -= 1) {
+            const p = pivots[r];
+            let value = 0;
+            for (let j = p + 1; j < colCount; j += 1) value ^= (a[r][j] & v[j]);
+            v[p] = value;
+          }
+          return v;
+        });
+      }
+
+      function saveState(rows, cols, basisIndex) {
+        if (window.openai?.setWidgetState) {
+          window.openai.setWidgetState({
+            modelContent: { board: `${rows}x${cols}`, basisIndex },
+            privateContent: null
+          }).catch(() => {});
+        }
+      }
+
+      function render(shouldSave = true) {
+        const [rows, cols] = sizeSelect.value.split('x').map(Number);
+        const basis = nullspaceGF2(matrixFor(rows, cols));
+        const oldIndex = Number(basisSelect.value || 0);
+        basisSelect.replaceChildren();
+        if (basis.length === 0) {
+          const option = document.createElement('option');
+          option.textContent = '只有 zero vector';
+          option.value = '0';
+          basisSelect.append(option);
+          basisSelect.disabled = true;
+        } else {
+          basisSelect.disabled = false;
+          basis.forEach((_, index) => {
+            const option = document.createElement('option');
+            option.textContent = `b${index + 1}`;
+            option.value = String(index);
+            basisSelect.append(option);
+          });
+          basisSelect.value = String(Math.min(oldIndex, basis.length - 1));
+        }
+        const basisIndex = Number(basisSelect.value || 0);
+        const vector = basis.length ? basis[basisIndex] : Array(rows * cols).fill(0);
+        dimOut.textContent = String(basis.length);
+        countOut.textContent = String(2 ** basis.length);
+        board.style.setProperty('--gk-cols', cols);
+        board.style.setProperty('--gk-rows', rows);
+        board.replaceChildren();
+        vector.forEach((value, index) => {
+          const cell = document.createElement('span');
+          cell.className = `gk-cell${value ? ' is-one' : ''}`;
+          cell.textContent = value ? '1' : '·';
+          const r = Math.floor(index / cols) + 1;
+          const c = (index % cols) + 1;
+          cell.setAttribute('aria-label', `第 ${r} 列第 ${c} 欄：${value}`);
+          board.append(cell);
+        });
+        board.setAttribute('aria-label', `${rows} 乘 ${cols} 格子；kernel 維度 ${basis.length}；顯示 ${basis.length ? `basis vector ${basisIndex + 1}` : 'zero vector'}`);
+        live.textContent = `${rows} 乘 ${cols} 的 kernel 維度是 ${basis.length}`;
+        if (shouldSave) saveState(rows, cols, basisIndex);
+      }
+
+      function restore() {
+        const saved = window.openai?.widgetState?.modelContent;
+        if (saved?.board && Array.from(sizeSelect.options).some(o => o.value === saved.board)) {
+          sizeSelect.value = saved.board;
+        }
+        render(false);
+        if (Number.isInteger(saved?.basisIndex) && !basisSelect.disabled) {
+          basisSelect.value = String(Math.min(saved.basisIndex, basisSelect.options.length - 1));
+          render(false);
+        }
+      }
+
+      sizeSelect.addEventListener('change', () => render(true));
+      basisSelect.addEventListener('change', () => render(true));
+      window.addEventListener('openai:set_globals', event => {
+        if (event.detail?.globals?.widgetState) restore();
+      });
+      restore();
+    })();
+  </script>
+</div>
